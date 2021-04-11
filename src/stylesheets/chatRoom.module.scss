@@ -1,0 +1,32 @@
+.loading_container{
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    
+    img{
+        width: 50%;
+        height: 50%;
+    }
+
+    .copy_room_id{
+        height: 50px;
+        width: 200px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background: #3f3d56;
+        color: white;
+        border-radius: 5px;
+        svg {
+            margin-right: 5px;
+        }
+        cursor: pointer;
+    }
+
+    .copy_room_id:active{
+        box-shadow: 5px 10px 10px gray;
+    }
+}
