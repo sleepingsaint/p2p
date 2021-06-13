@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Peer 2 Peer</title>
+		<style>
+			video {
+				width: 640px;
+				height: 480px;
+				background-color: salmon;
+			}
+		</style>
+	</head>
+	<body>
+		<video id="local" autoplay muted></video>
+		<video id="remote" autoplay muted></video>
+		<video id="screen" autoplay></video>
+		<div>
+			<input type="text" placeholder="Room Id" id="room-id" value="roomId" />
+			<button id="webcam-btn">Setup Webcam</button>
+			<button id="create-btn">Create Room</button>
+			<button id="join-btn">Join Room</button>
+			<button id="share-screen-btn">Share screen</button>
+		</div>
+
+		<div>
+			<div>
+				<input type="text" id="message" />
+				<button id="send-msg">Send</button>
+			</div>
+
+			<div id="msg-container"></div>
+		</div>
+		<script src="/socket.io/socket.io.js"></script>
+
+		<script>
+			var socket = io("/");
+			const localVideo = document.getElementById("local");
+			const remoteVideo = document.getElementById("remote");
+			const screenVideo = document.getElementById("screen");
+
+			const roomIdInput = document.getElementById("room-id");
+			const createBtn = document.getElementById("create-btn");
+			const joinBtn = document.getElementById("join-btn");
+			const webcamBtn = document.getElementById("webcam-btn");
+			const msgInput = document.getElementById("message");
+			const sendMsgBtn = document.getElementById("send-msg");
+			const msgContainer = document.getElementById("msg-container");
+			const shareScreenBtn = document.getElementById("share-screen-btn");
+
+			const servers = {
+				iceServers: [
+					{
+						urls: [
+							"stun:stun1.l.google.com:19302",
+							"stun:stun2.l.google.com:19302",
+						],
+					},
+				],
+			};
+
+			sendMsgBtn.onclick = () => {
+				let msg = msgInput.value;
+				if (dataChannel && dataChannel.readyState === "open") {
+					dataChannel.send(msg);
+					addMessage(msg);
+					msgInput.value = "";
+				} else {
+					console.log("Data channel is not open yet");
+					console.log(dataChannel);
+				}
+			};
+
+			const pc = new RTCPeerConnection(servers);
+			let localStream = null;
+			let remoteStream = null;
+			let dataChannel = null;
+			let shareStream = null;
+
+			webcamBtn.addEventListener("click", async () => {
+				localStream = await navigator.mediaDevices.getUserMedia({
+					video: true,
+					audio: true,
+				});
+
+				remoteStream = new MediaStream();
+				shareStream = new MediaStream();
+
+				localStream
+					.getTracks()
+					.forEach((track) => pc.addTrack(track, localStream));
+
+				pc.ontrack = (event) => {
+					event.streams[0].getTracks().forEach((track) => {
+						remoteStream.addTrack(track);
+					});
+
+					if(event.streams.length >= 3){
+						screen.srcObject = event.streams[2];
+					}
+				};
+
+				shareScreenBtn.onclick = async () => {
+					const stream = await navigator.mediaDevices.getDisplayMedia();
+					stream.getTracks().forEach(track => {
+						shareStream.addTrack(track);
+						pc.addTrack(track, stream)
+					})
+				}
+				
+				localVideo.srcObject = localStream;
+				remoteVideo.srcObject = remoteStream;
+				screenVideo.srcObject = shareStream;
+			});
+
+			createBtn.onclick = async () => {
+				let roomId = roomIdInput.value;
+
+				pc.onicecandidate = (event) => {
+					socket.emit("candidate", {
+						roomId,
+						candidate: event.candidate,
+					});
+				};
+
+				dataChannel = pc.createDataChannel("chat channel");
+				dataChannel.onerror = (event) =>
+					console.log("[data channel error]", event);
+				dataChannel.onopen = () => console.log("Data channel formed");
+				dataChannel.onmessage = (event) => addMessage(event.data, false);
+				dataChannel.onclose = (event) => console.log("Data channel closed");
+
+				const offerDescription = await pc.createOffer();
+				await pc.setLocalDescription(offerDescription);
+
+				const offer = {
+					sdp: offerDescription.sdp,
+					type: offerDescription.type,
+				};
+
+				// sending offer
+				socket.emit("offer", {
+					roomId,
+					offer,
+				});
+
+				// listening to answer
+				socket.on("answer", async (data) => {
+					if (!pc.currentRemoteDescription) {
+						const answerDescription = new RTCSessionDescription(data);
+						await pc.setRemoteDescription(answerDescription);
+					}
+				});
+
+				// listening to ice candidates
+				socket.on("ice-candidate", (candidate) => {
+					if (candidate) {
+						const icecandidate = new RTCIceCandidate(candidate);
+						pc.addIceCandidate(icecandidate);
+					}
+				});
+			};
+
+			joinBtn.onclick = async () => {
+				let roomId = roomIdInput.value;
+
+				pc.onicecandidate = (event) => {
+					socket.emit("candidate", {
+						roomId,
+						candidate: event.candidate,
+					});
+				};
+
+				pc.ondatachannel = (event) => {
+					if (event.channel) {
+						dataChannel = event.channel;
+						dataChannel.onerror = (event) =>
+							console.log("[data channel error]", event);
+						dataChannel.onopen = () => console.log("Data channel formed");
+						dataChannel.onmessage = (event) => addMessage(event.data, false);
+						dataChannel.onclose = (event) => console.log("Data channel closed");
+					}
+				};
+
+				fetch("/getRoomOffer/" + roomId)
+					.then((data) => data.json())
+					.then(async (offer) => {
+						await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+						const answerDescription = await pc.createAnswer();
+						await pc.setLocalDescription(answerDescription);
+
+						const answer = {
+							sdp: answerDescription.sdp,
+							type: answerDescription.type,
+						};
+
+						socket.emit("answer", {
+							roomId,
+							answer,
+						});
+
+						socket.on("ice-candidate", (candidate) => {
+							if (candidate) {
+								const icecandidate = new RTCIceCandidate(candidate);
+								pc.addIceCandidate(icecandidate);
+							}
+						});
+					})
+					.catch((err) => {
+						console.log(err);
+						alert("Room doesn't exist");
+					});
+			};
+
+			function addMessage(msg, local = true) {
+				let el = document.createElement("p");
+				let textNode = document.createTextNode((local ? "[local] " : "[remote] ") + msg);
+				el.appendChild(textNode);
+				msgContainer.appendChild(el);
+			}
+		</script>
+	</body>
+</html>
